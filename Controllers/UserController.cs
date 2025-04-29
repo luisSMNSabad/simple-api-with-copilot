@@ -1,107 +1,97 @@
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using UserApi.Models;
+using SecureApp.Constants;
+using SecureApp.Models;
+using SecureApp.Repositories;
+using SecureApp.Services;
 
-namespace UserApi.Controllers
+namespace SecureApp.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class UserController : ControllerBase
 {
-    [Route("api/[controller]")]
-    [ApiController]
-    public class UserController : ControllerBase
+    private readonly IUserRepository _userRepository;
+    private readonly InputValidator _validator;
+
+    public UserController(IUserRepository userRepository, InputValidator validator)
     {
-        private static List<User> users = new List<User>();
+        _userRepository = userRepository;
+        _validator = validator;
+    }
 
-        [HttpGet]
-        public async Task<ActionResult<IEnumerable<User>>> GetUsers()
+    [HttpPost("submit")]
+    public async Task<IActionResult> ProcessForm([FromForm] string username, [FromForm] string email)
+    {
+        // Validate inputs
+        var usernameValidation = _validator.ValidateUsername(username);
+        if (!usernameValidation.IsValid)
         {
-            try
-            {
-                 return Ok(await Task.FromResult(users));
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Internal server error: {ex.Message}");
-            }
+            return BadRequest(usernameValidation.ErrorMessage);
         }
 
-        [HttpGet("{id}")]
-        public ActionResult<User> GetUser(int id)
+        var emailValidation = _validator.ValidateEmail(email);
+        if (!emailValidation.IsValid)
         {
-            try
-            {
-                var user = users.FirstOrDefault(u => u.Id == id);
-                if (user == null)
-                {
-                    return NotFound();
-                }
-                return Ok(user);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Internal server error: {ex.Message}");
-            }
+            return BadRequest(emailValidation.ErrorMessage);
         }
 
-        [HttpPost]
-        public ActionResult<User> CreateUser([FromBody] User user)
+        // Check if user already exists
+        var existingUser = await _userRepository.GetUserByUsernameAsync(usernameValidation.SanitizedValue);
+        if (existingUser != null)
         {
-            if (!ModelState.IsValid)
-            {
-                return BadRequest(ModelState);
-            }
-
-            try
-            {
-                user.Id = users.Count + 1;
-                users.Add(user);
-                return CreatedAtAction(nameof(GetUser), new { id = user.Id }, user);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Internal server error: {ex.Message}");
-            }
+            return BadRequest("Username already exists");
         }
 
-        [HttpPut("{id}")]
-        public IActionResult UpdateUser(int id, [FromBody] User updatedUser)
+        // Create new user
+        var user = new User
         {
-            if (!ModelState.IsValid)
-            {
-                return BadRequest(ModelState);
-            }
+            UserName = usernameValidation.SanitizedValue,
+            Email = emailValidation.SanitizedValue
+        };
 
-            try
-            {
-                var user = users.FirstOrDefault(u => u.Id == id);
-                if (user == null)
-                {
-                    return NotFound();
-                }
-                user.Name = updatedUser.Name;
-                user.Email = updatedUser.Email;
-                return NoContent();
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Internal server error: {ex.Message}");
-            }
+        var success = await _userRepository.CreateUserAsync(user);
+        if (!success)
+        {
+            return StatusCode(500, "Failed to create user");
         }
 
-        [HttpDelete("{id}")]
-        public IActionResult DeleteUser(int id)
+        return Ok("User created successfully");
+    }
+
+    [HttpGet("search")]
+    public async Task<IActionResult> SearchUsers([FromQuery] string term)
+    {
+        if (string.IsNullOrWhiteSpace(term))
         {
-            try
-            {
-                var user = users.FirstOrDefault(u => u.Id == id);
-                if (user == null)
-                {
-                    return NotFound();
-                }
-                users.Remove(user);
-                return NoContent();
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Internal server error: {ex.Message}");
-            }
+            return BadRequest("Search term cannot be empty");
         }
+
+        // Sanitize search term
+        var sanitizedTerm = _validator.RemoveDangerousCharacters(term);
+
+        var users = await _userRepository.SearchUsersAsync(sanitizedTerm);
+        return Ok(users);
+    }
+
+    [HttpGet("profile")]
+    public IActionResult GetProfile()
+    {
+        // Available to any authenticated user
+        return Ok("User profile data");
+    }
+
+    [HttpGet("sensitive-data")]
+    [Authorize(Roles = $"{Roles.Admin},{Roles.User}")] // Multiple roles
+    public IActionResult GetSensitiveData()
+    {
+        return Ok("Sensitive data");
+    }
+
+    [HttpGet("admin-only")]
+    [Authorize(Roles = Roles.Admin)]
+    public IActionResult GetAdminData()
+    {
+        return Ok("Admin only data");
     }
 }
